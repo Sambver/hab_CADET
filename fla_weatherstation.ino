@@ -11,10 +11,10 @@
 // Read temperature sensors
 #include <OneWire.h>
 #include <DallasTemperature.h>
-// humidity sensor library
-#include "DHT.h"
 // servo library, controls connection between balloon and payload
 #include <Servo.h>
+// power sensor library
+#include <Adafruit_INA260.h>
 // barometric pressure sensor
 #include <Wire.h>
 #include "BlueDot_BME280_TSL2591.h"
@@ -22,6 +22,10 @@ BlueDot_BME280_TSL2591 bme280;
 
 NMEAGPS  gps; // This parses the GPS characters
 gps_fix  fix; // This holds on to the latest values
+
+// detects voltage, current, and power
+Adafruit_INA260 powerSensor = Adafruit_INA260();
+bool powerSensorFound = false;
 
 // servo related variables
 Servo balloonAttachServo;
@@ -51,16 +55,16 @@ const int servoButtonPin = 10;
 OneWire oneWire(TEMP_WIRE_BUS); 
 /********************************************************************/
 // Pass our oneWire reference to Dallas Temperature. 
-DallasTemperature tempSensors(&oneWire);
+DallasTemperature onewireTempSensors(&oneWire);
 /********************************************************************/
+
+// analog temp sensor
+const bool useAnalogTemp = false;
+const int analogTempPin = 8;
+int analogTempInput = 0;
 
 // defines pin used to write to SD card
 #define WRITE_PIN 53
-
-// define pin used and chip type for humidity chip
-#define DHTPIN 12 
-#define DHTTYPE DHT22
-DHT dht(DHTPIN, DHTTYPE);
 
 // set to true if you want output to Serial monitor
 #define DEBUG true
@@ -95,9 +99,10 @@ void setup() {
     File dataFile = SD.open("gpslog.csv", FILE_WRITE);
     if (dataFile) {
       String titleStr = "Time,Date,Outside Temp,Inside Temp,";
-      titleStr += "Humidity,Humidity Temp,Barometric Pressure,";
-      titleStr += "Barometric Temperature,Barometric Humidity,Barometric ";
-      titleStr += "Altitude,Latitude,Longitude,Speed,Altitude,Satellites";
+      titleStr += "Barometric Pressure,Barometric Temperature,";
+      titleStr += "Barometric Humidity,Barometric Altitude,";
+      titleStr += "Current (mA), BusVoltage (mV), Power (mW),";
+      titleStr += "Latitude,Longitude,Speed,Altitude,Satellites";
       dataFile.println(titleStr);
       dataFile.close();
     }
@@ -124,11 +129,17 @@ void setupSensors()
   setupBarometricSensor();
 
   // Start temperature sensor data
-  tempSensors.begin();
-  // Start the humidity sensor data
-  dht.begin();
+  if (!useAnalogTemp) {
+    onewireTempSensors.begin();
+  }
   // 9600 NMEA is the default baud rate for Adafruit MTK GPS's- some use 4800
   gpsPort.begin(9600);
+  if (!powerSensor.begin()) {
+    powerSensorFound = false;
+    debugPrint("Unable to find INA260 power sensor chip!");
+  } else {
+    powerSensorFound = true;
+  }
   // setup servo that connects balloon to payload
   // as well as tactile button that controls servo
   setupBalloonAttachServo();
@@ -276,13 +287,19 @@ void loop()
     fix = gps.read();
     
     // Sends command to retrieve temperatures before querying
-    tempSensors.requestTemperatures();
+    onewireTempSensors.requestTemperatures();
 
-    // Reading temperature/humidity takes about 250 ms
-    // Could be up to 2 seconds 'old'
-    float humid = dht.readHumidity();
-    // Read temperature as Celsius
-    float humidTemp = dht.readTemperature();
+    String powerSensorData;
+    if (powerSensorFound) {
+      // TODO: Unused, remove if not needed
+      float current = powerSensor.readCurrent();
+      float busVoltage = powerSensor.readBusVoltage();
+      float power = powerSensor.readPower();
+      powerSensorData = String(current, 4) + "," + String(busVoltage, 4) + 
+                        "," + String(power, 4) + ",";
+    } else {
+      powerSensorData = "NAN,NAN,NAN";
+    }
 
     // Read barometric sensor data and store in string
     String barSensorData = String(bme280.readPressure()) + "," +
@@ -300,17 +317,11 @@ void loop()
                String(fix.dateTime.month) + "/" +
                String(fix.dateTime.year) + ",";
 
-    dataStr += String(tempSensors.getTempCByIndex(0)) + ",";
-    dataStr += String(tempSensors.getTempCByIndex(1)) + ",";
-
-    if (!isnan(humid)) {
-      dataStr += String(humid) + ",";
-    }
-    if (!isnan(humidTemp)) {
-      dataStr += String(humidTemp) + ",";
-    }
+    dataStr += String(onewireTempSensors.getTempCByIndex(0)) + ",";
+    dataStr += String(onewireTempSensors.getTempCByIndex(1)) + ",";
 
     dataStr += barSensorData;
+    dataStr += powerSensorData;
 
     // Test 
     // outside fence:
