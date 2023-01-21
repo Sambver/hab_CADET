@@ -39,6 +39,19 @@ bool closedFromButton = true;
 // geofence
 const bool useGeofence = true; // turn on if using geofence to drop payload
 bool outsideGeofence = false;
+struct Geofence {
+  // p1 must always be upper point for algorithm to know
+  // what is inside or outside fence
+  float p1Lat;
+  float p1Lon;
+  float p2Lat;
+  float p2Lon;
+};
+
+// Geofence geofenceLower = {43.0869, -83.29721, 43.08184, -83.30335};
+Geofence geofenceLower = {42.98269, -82.82611, 41.70606, -83.82611};
+Geofence geofenceUpper = {43.84309, -83.06529, 42.98269, -82.82611};
+
 const float fenceLat1 = 43.08696;
 const float fenceLon1 = -83.29721;
 const float fenceLat2 = 43.08184;
@@ -325,7 +338,7 @@ void loop()
 
     // Test 
     // outside fence:
-    // outsideGeofence = !isInsideGeofence(43.08570, -83.29740);
+    outsideGeofence = !isInsideGeofence(43.08570, -83.29740);
     // inside fence:
     // outsideGeofence = !isInsideGeofence(43.09083, -83.29861);
 
@@ -335,7 +348,7 @@ void loop()
       // we were seeing issues when just using raw GPS data
       String stLat = String(fix.latitude(),6);
       String stLon = String(fix.longitude(), 6);
-      outsideGeofence = !isInsideGeofence(stLat.toFloat(), stLon.toFloat());
+      // outsideGeofence = !isInsideGeofence(stLat.toFloat(), stLon.toFloat());
 
 
       dataStr += String(fix.latitude(), 6) + 
@@ -375,14 +388,29 @@ bool isInsideGeofence(float lat, float lon) {
 
   // Don't compare if under lower latitude. Outside of danger
   // of Great Lakes
-  if (lat >= fenceLat2) {
-    float relativeLoc = (lat - fenceLat1)*(fenceLon2 - fenceLon1)
-                        - (lon - fenceLon1)*(fenceLat2 - fenceLat1);
-    String output = "location in relation to fence: " + String(relativeLoc, 6);
+  if (lat >= geofenceLower.p2Lat) {
+    float relativeLocLower = (lat - geofenceLower.p1Lat)*
+                        (geofenceLower.p2Lon - geofenceLower.p1Lon)
+                        - (lon - geofenceLower.p1Lon)*
+                        (geofenceLower.p2Lat - geofenceLower.p1Lat);
+    float relativeLocUpper = (lat - geofenceUpper.p1Lat)*
+                        (geofenceUpper.p2Lon - geofenceUpper.p1Lon)
+                        - (lon - geofenceUpper.p1Lon)*
+                        (geofenceUpper.p2Lat - geofenceUpper.p1Lat); 
+    String output = "location in relation to lower fence: " + String(relativeLocLower, 6);
+    String output = "location in relation to upper fence: " + String(relativeLocLower, 6);
     debugPrint(output);
-    if (relativeLoc > 0) {
+    if (relativeLocLower > 0 || relativeLocUpper > 0 || lat > geofenceUpper.p1Lat) {
       inside = false;
       debugPrint("OUTSIDE FENCE");
+      // for debugging
+      if (relativeLocLower > 0) {
+        debugPrint("Outside lower fence");
+      } else if (relativeLocUpper > 0) {
+        debugPrint("Outside upper fence");
+      } else {
+        debugPrint("Above upper fence");
+      }
     } else {
       debugPrint("inside fence");
     }
