@@ -82,6 +82,19 @@ int analogTempInput = 0;
 // set to true if you want output to Serial monitor
 #define DEBUG true
 
+// don't include file type for now, that is
+// determined at initialization, as well as
+// appending count to file name if needed
+String logFileName = "LOG";
+String dataFileName = "DATA";
+
+// Keep track of last logged valid gps & barometric pressure data
+String lastValidDateTime;
+float barAltitudeReadings[10] = {0};
+float gpsAltitudeReadings[10] = {0};
+const int minAltitude = 3000; // alt must be at least this far to drop
+const int fallingAltitude = 100; // must drop this far to be considered falling
+
 uint32_t timer = millis();
 bool sd_init_successful = false;
 
@@ -106,22 +119,61 @@ void setup() {
     // keep running because data is stored on GPS chip as well
     sd_init_successful = false;
   } else {
-    debugPrint("card initialized.");
+    debugPrint("Card initialized.");
     sd_init_successful = true;
     // Write first line to SD card
-    File dataFile = SD.open("gpslog.csv", FILE_WRITE);
-    if (dataFile) {
-      String titleStr = "Time,Date,Outside Temp,Inside Temp,";
-      titleStr += "Barometric Pressure,Barometric Temperature,";
-      titleStr += "Barometric Humidity,Barometric Altitude,";
-      titleStr += "Current (mA), BusVoltage (mV), Power (mW),";
-      titleStr += "Latitude,Longitude,Speed,Altitude,Satellites";
-      dataFile.println(titleStr);
-      dataFile.close();
-    }
-    
+    initDataFile();
+    initLogFile();    
   }
   setupSensors();
+}
+
+void initDataFile()
+{
+  int count = 0;
+  String testFileName = dataFileName + "_00" + String(count) + ".csv";
+  while (SD.exists(testFileName)) {
+    count++;
+    if (count < 10) {
+      testFileName = dataFileName + "_00" + String(count);
+    } else if (count < 100) {
+      testFileName = dataFileName + "_0" + String(count);
+    } else {
+      testFileName = dataFileName + "_" + String(count);
+    }
+    testFileName = testFileName + ".csv";
+  }
+  dataFileName = testFileName;
+  // dataFileName = "data.csv";
+  debugPrint("file name found: " + dataFileName);
+  // TODO: Make this dependent on what sensors exist 
+  // (or on flags in beginning setup)
+  String titleStr = "Time,Date,Outside Temp,Inside Temp,";
+  titleStr += "Barometric Pressure,Barometric Temperature,";
+  titleStr += "Barometric Humidity,Barometric Altitude,";
+  titleStr += "Current (mA), BusVoltage (mV), Power (mW),";
+  titleStr += "Latitude,Longitude,Speed,Altitude,Satellites";
+  writeToDataFile(titleStr);
+}
+
+void initLogFile()
+{
+  int count = 0;
+  String testFileName = logFileName + "_00" + String(count) + ".txt";
+  while (SD.exists(testFileName)) {
+    count++;
+    if (count < 10) {
+      testFileName = logFileName + "_00" + String(count);
+    } else if (count < 100) {
+      testFileName = logFileName + "_0" + String(count);
+    } else {
+      testFileName = logFileName + "_" + String(count);
+    }
+    testFileName = testFileName + ".txt";
+    // fileExists = SD.exists(testFileName);
+  }
+  logFileName = testFileName;
+  debugPrint("file name found: " + logFileName);
 }
 
 String formatTime(int timeVal) {
@@ -149,7 +201,7 @@ void setupSensors()
   gpsPort.begin(9600);
   if (!powerSensor.begin()) {
     powerSensorFound = false;
-    debugPrint("Unable to find INA260 power sensor chip!");
+    writeToLogFile("Unable to find INA260 power sensor chip");
   } else {
     powerSensorFound = true;
   }
@@ -266,12 +318,12 @@ void setupBarometricSensor()
   //*************ADVANCED SETUP IS OVER - LET'S CHECK THE CHIP ID!*******
 
   if (bme280.init_BME280() != 0x60)  
-  {        
-    debugPrint("Ops! BME280 could not be found!");
+  {
+    writeToLogFile("BME280 could not be found.");
   }
   else
   {
-    debugPrint("BME280 detected!");
+    writeToLogFile("BME280 detected");
   }
 }
 
@@ -289,11 +341,7 @@ void setupBalloonAttachServo()
 
 void loop()
 {
-  bool pauseRead = handleServoButtonPress();
-  // while(pauseRead) {
-  //   pauseRead = handleServoButtonPress();
-  //   debugPrint("reading is paused for servo handling");
-  // }
+  handleServoButtonPress();
   // approximately every 10 seconds or so, print out the current stats
   // includes both GPS stats (date/time/location/etc) and temperature
   if (millis() - timer > 10000 && gps.available(gpsPort)) {
@@ -317,18 +365,26 @@ void loop()
     // Read barometric sensor data and store in string
     String barSensorData = String(bme280.readPressure()) + "," +
                            String(bme280.readTempC()) + "," + 
-                           String(bme280.readHumidity()) + "," +
-                           String(bme280.readAltitudeMeter()) + ",";
+                           String(bme280.readHumidity()) + ",";
+    float barAltitude = bme280.readAltitudeMeter();
+    // String barAltitude = String(bme280.readAltitudeMeter());
     
     timer = millis(); // reset the timer
 
+    barSensorData += String(barAltitude) + ",";
+    addAltitudeData(barAltitude, "barometric");
+
+    // Reset lastValidDateTime and only set if fix is valid
+    lastValidDateTime = "";
+    String dateStr;
     String dataStr;
-    dataStr += formatTime(fix.dateTime.hours) + ":" +
+    dateStr += formatTime(fix.dateTime.hours) + ":" +
                formatTime(fix.dateTime.minutes) + ":" +
                formatTime(fix.dateTime.seconds) + ",";
-    dataStr += String(fix.dateTime.day) + "/" + 
+    dateStr += String(fix.dateTime.day) + "/" + 
                String(fix.dateTime.month) + "/" +
                String(fix.dateTime.year) + ",";
+    dataStr += dateStr;
 
     dataStr += String(onewireTempSensors.getTempCByIndex(0)) + ",";
     dataStr += String(onewireTempSensors.getTempCByIndex(1)) + ",";
@@ -338,43 +394,50 @@ void loop()
 
     // Test 
     // outside fence:
-    outsideGeofence = !isInsideGeofence(43.08570, -83.29740);
+    // outsideGeofence = !isInsideGeofence(43.15061, -82.67281);
+    // outsideGeofence = !isInsideGeofence(43.92313, -82.89254);
     // inside fence:
+    // outsideGeofence = !isInsideGeofence(43.08570, -83.29740);
     // outsideGeofence = !isInsideGeofence(43.09083, -83.29861);
 
     if (fix.valid.location && fix.valid.altitude) {
+      String strLat = String(fix.latitude(), 6);
+      String strLon = String(fix.longitude(), 6);
+      String strSpeed = String(fix.speed_kph());
+      float alt = fix.altitude();
+      String strAlt = String(alt);
+      String strSats = String((int)fix.satellites);
       // TODO: get working without cast to String
       // converting to string and back to float because
       // we were seeing issues when just using raw GPS data
-      String stLat = String(fix.latitude(),6);
-      String stLon = String(fix.longitude(), 6);
-      // outsideGeofence = !isInsideGeofence(stLat.toFloat(), stLon.toFloat());
+      outsideGeofence = !isInsideGeofence(strLat.toFloat(), strLon.toFloat());
 
+      // Only save time and dates if we have a valid location
+      // otherwise, it is using default settings
+      lastValidDateTime = dateStr;
+      addAltitudeData(alt, "gps");
 
-      dataStr += String(fix.latitude(), 6) + 
-                 "," + String(fix.longitude(), 6) + ",";
-      dataStr += String(fix.speed_kph()) + "," + 
-                 String(fix.altitude()) + "," + String((int)fix.satellites);
+      dataStr += strLat + 
+                 "," + strLon + ",";
+      dataStr += strSpeed + "," + strAlt + "," + strSats;
     } else {
       // print raw data for debugging
       dataStr += "unable to retrieve data";
     }
 
+    // check to see if falling
+    if (checkAltitudeForFalling()) {
+      handleFenceBreakOrFalling();
+    }
+
     // if outside geofence, disconnect payload from balloon
     // only use if useGeofence is set to true
     if (useGeofence && outsideGeofence) {
-      handleFenceBreak();
+      handleFenceBreakOrFalling();
     }
 
     if (sd_init_successful) {
-       File dataFile = SD.open("gpslog.csv", FILE_WRITE);
-       if (dataFile) {
-         // if the file is available, write to it
-         dataFile.println(dataStr);
-         dataFile.close();
-       } else if (DEBUG) {
-          debugPrint("error opening file");
-       }
+       writeToDataFile(dataStr);
     }
     debugPrint(dataStr);
   }
@@ -397,19 +460,20 @@ bool isInsideGeofence(float lat, float lon) {
                         (geofenceUpper.p2Lon - geofenceUpper.p1Lon)
                         - (lon - geofenceUpper.p1Lon)*
                         (geofenceUpper.p2Lat - geofenceUpper.p1Lat); 
-    String output = "location in relation to lower fence: " + String(relativeLocLower, 6);
-    String output = "location in relation to upper fence: " + String(relativeLocLower, 6);
-    debugPrint(output);
+    String output1 = "location in relation to lower fence: " + String(relativeLocLower, 6);
+    String output2 = "location in relation to upper fence: " + String(relativeLocUpper, 6);
+    debugPrint(output1);
+    debugPrint(output2);
     if (relativeLocLower > 0 || relativeLocUpper > 0 || lat > geofenceUpper.p1Lat) {
       inside = false;
-      debugPrint("OUTSIDE FENCE");
+      writeToLogFile("OUTSIDE FENCE");
       // for debugging
       if (relativeLocLower > 0) {
-        debugPrint("Outside lower fence");
+        writeToLogFile("Outside lower fence");
       } else if (relativeLocUpper > 0) {
-        debugPrint("Outside upper fence");
+        writeToLogFile("Outside upper fence");
       } else {
-        debugPrint("Above upper fence");
+        writeToLogFile("Above upper fence");
       }
     } else {
       debugPrint("inside fence");
@@ -419,6 +483,140 @@ bool isInsideGeofence(float lat, float lon) {
   }
 
   return inside;
+}
+
+void writeToDataFile(String writeData)
+{
+  File dataFile = SD.open(dataFileName, FILE_WRITE);
+  if (dataFile) {
+    dataFile.println(writeData);
+    dataFile.close();
+  } else {
+    writeToLogFile("error opening data file");
+    debugPrint("file name is: " + dataFileName);
+  }
+}
+
+void writeToLogFile(String writeData)
+{
+  debugPrint(writeData);
+  File logFile = SD.open(logFileName, FILE_WRITE);
+  if (logFile) {
+    // Write date/time if not invalid. If the last reading was
+    // not valid, it will write an empty line instead
+    logFile.println(lastValidDateTime + " ");    
+    logFile.println(writeData);
+    logFile.close();
+  } else {
+    debugPrint("error opening log file");
+  }
+}
+
+// dataType options are barometric or gps
+void addAltitudeData(float newData, String dataType) 
+{
+  if (dataType == "barometric") {
+    debugPrint("adding reading to barometric readings");
+    // Move every reading by one, removing last point
+    for (int i = 9; i > 0; i--) {
+      barAltitudeReadings[i] = barAltitudeReadings[i-1];
+    }
+    barAltitudeReadings[0] = newData;
+    String barReadings;
+    for (int i = 0; i < 10; i++) {
+      barReadings += String(barAltitudeReadings[i]) + " ";
+    }
+    debugPrint("new barometric readings: " + barReadings);
+  } else if (dataType == "gps") {
+    debugPrint("adding reading to gps readings");
+    // Move every reading by one, removing last point
+    for (int i = 9; i > 0; i--) {
+      gpsAltitudeReadings[i] = gpsAltitudeReadings[i-1];
+    }
+    gpsAltitudeReadings[0] = newData;
+    String gpsReadings;
+    for (int i = 0; i < 10; i++) {
+      gpsReadings += String(gpsAltitudeReadings[i]) + " ";
+    }
+    debugPrint("new gps readings: " + gpsReadings);
+  }
+}
+
+// checks both gps and geometric readings
+bool checkAltitudeForFalling()
+{
+  bool barIsFalling = false;
+  bool gpsIsFalling = false;
+  bool isFalling = false;
+  bool gpsValid = true;
+  bool barValid = true;
+  // set test readings
+  gpsAltitudeReadings[0] = 3020.6;
+  gpsAltitudeReadings[1] = 3050.6;
+  gpsAltitudeReadings[2] = 3060.06;
+  gpsAltitudeReadings[3] = 3070.1;
+  gpsAltitudeReadings[4] = 3072.1;
+  gpsAltitudeReadings[5] = 3075.1;
+  gpsAltitudeReadings[6] = 3100.1;
+  gpsAltitudeReadings[7] = 3102.1;
+  gpsAltitudeReadings[8] = 3100.1;
+  gpsAltitudeReadings[9] = 3100.1;
+  float maxVal = gpsAltitudeReadings[0];
+  float minVal = gpsAltitudeReadings[0];
+  // First check gps. Do validity test at same time, fall test
+  // is only valid if we have valid inputs
+  for (int i = 0; i < 10; i ++) {
+    if (gpsAltitudeReadings[i] < 1.0) {
+      gpsValid = false;
+      break;
+    }
+    maxVal = max(gpsAltitudeReadings[i], maxVal);
+    minVal = min(gpsAltitudeReadings[i], minVal);
+  }
+  if (gpsValid && maxVal > minAltitude && 
+        (maxVal - minVal > fallingAltitude)) {
+    gpsIsFalling = true;
+    writeToLogFile("balloon is falling. Max height according to gps is: " + String(maxVal));
+  } else {
+    debugPrint("not falling according to gps");
+  }
+  if (!gpsValid) {
+    debugPrint("not enough data points to test for falling");
+  }
+
+  // barAltitudeReadings[0] = 3020.6;
+  // barAltitudeReadings[1] = 3050.6;
+  // barAltitudeReadings[2] = 3060.06;
+  // barAltitudeReadings[3] = 3070.1;
+  // barAltitudeReadings[4] = 3072.1;
+  // barAltitudeReadings[5] = 3075.1;
+  // barAltitudeReadings[6] = 3100.1;
+  // barAltitudeReadings[7] = 3102.1;
+  // barAltitudeReadings[8] = 3100.1;
+  // barAltitudeReadings[9] = 3400.1;
+  maxVal = barAltitudeReadings[0];
+  minVal = barAltitudeReadings[0];
+  // Now check barometric readings
+  for (int i = 0; i < 10; i ++) {
+    if (barAltitudeReadings[i] < 1.0) {
+      barValid = false;
+      break;
+    }
+    maxVal = max(barAltitudeReadings[i], maxVal);
+    minVal = min(barAltitudeReadings[i], minVal);
+  }
+  if (barValid && maxVal > minAltitude && 
+        (maxVal - minVal > fallingAltitude)) {
+    barIsFalling = true;
+    writeToLogFile("balloon is falling according to barometer. Max height recorded " + String(maxVal));
+  } else {
+    debugPrint("not falling according to bar");
+  }
+  if (!barValid) {
+    debugPrint("not enough data points to test for falling");
+  }
+
+  return (barIsFalling || gpsIsFalling);
 }
 
 bool handleServoButtonPress()
@@ -433,9 +631,7 @@ bool handleServoButtonPress()
   if (buttonState == HIGH && servoCurrentPos < servoHalfOpenPos) {
     handlingServo = true;
     servoCurrentPos = servoHalfOpenPos;
-    String outputStr = "Opening servo. Servo pos will be set to: " 
-                        + String(servoCurrentPos);
-    debugPrint(outputStr);
+    writeToLogFile("Button pressed. Opening servo to half-open position.");
     balloonAttachServo.write(servoCurrentPos);
     delay(50);
     // toggle here to ensure that we don't close the servo if it
@@ -447,9 +643,7 @@ bool handleServoButtonPress()
              !closedFromButton) {
     handlingServo = true;
     servoCurrentPos--;
-    String outputStr = "Closing servo. Servo pos will be set to: " 
-                        + String(servoCurrentPos);
-    debugPrint(outputStr);
+    writeToLogFile("Button released. Servo being closed");
     balloonAttachServo.write(servoCurrentPos);
     delay(50);
     if (servoCurrentPos == servoClosePos) {
@@ -460,9 +654,9 @@ bool handleServoButtonPress()
   return handlingServo;
 }
 
-void handleFenceBreak() {
+void handleFenceBreakOrFalling() {
   if (servoCurrentPos < servoOpenPos) {
-    debugPrint("opening servo to disconnect from balloon");
+    writeToLogFile("Servo opening automatically. Disconnecting from balloon");
     servoCurrentPos = servoOpenPos;
     balloonAttachServo.write(servoCurrentPos);
   }
