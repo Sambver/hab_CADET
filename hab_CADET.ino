@@ -2,7 +2,7 @@
 // GPS generates data at a specified rate
 // and data is written to SD card
 
-// GPSort library gives more accurate readings than Adafruit GPS
+// GPSport library gives more accurate readings than Adafruit GPS
 #include <NMEAGPS.h>
 #include <GPSport.h>
 // Libaries to write to SD card
@@ -81,7 +81,7 @@ int analogTempInput = 0;
 #define WRITE_PIN 53
 
 // set to true if you want output to Serial monitor
-#define DEBUG false
+#define DEBUG true
 
 // don't include file type for now, that is
 // determined at initialization, as well as
@@ -101,6 +101,7 @@ float gpsHighestAltitude = 0.0;
 float barHighestAltitude = 0.0;
 const int fallingAltitude = 100; // must drop this far to be considered falling
 bool isFalling = false;
+// const int timeZoneOffset = -20000;
 
 uint32_t timer = millis();
 bool sd_init_successful = false;
@@ -130,7 +131,8 @@ void setup() {
     sd_init_successful = true;
     // Write first line to SD card
     initDataFile();
-    initLogFile();    
+    initLogFile();
+    writeToLogFile("In arduino init");
   }
   setupSensors();
 }
@@ -182,6 +184,8 @@ void initLogFile()
   }
   logFileName = testFileName;
   debugPrint("file name found: " + logFileName);
+  writeToLogFile("Log file initiated");
+  writeToLogFile("file name found: " + logFileName);
 }
 
 String formatTime(int timeVal) {
@@ -193,6 +197,7 @@ String formatTime(int timeVal) {
 
 void debugPrint(String output) {
   if (DEBUG) {
+  // if (true) {
     Serial.println(output);
   }
 }
@@ -349,7 +354,9 @@ void setupBalloonAttachServo()
 
 void loop()
 {
-  handleServoButtonPress();
+  bool buttonPressActions = handleServoButtonPress();
+  if (buttonPressActions)
+    debugPrint("button is being pressed");
   // approximately every 10 seconds or so, print out the current stats
   // includes both GPS stats (date/time/location/etc) and temperature
   if (millis() - timer > readTime && gps.available(gpsPort)) {
@@ -386,6 +393,22 @@ void loop()
     lastValidDateTime = "";
     String dateStr;
     String dataStr;
+    // adjustTime(fix.dateTime);
+    if (fix.valid.time) {
+      // Serial.println("Before timezone: " + String(fix.dateTime));
+      // Serial.println(String(fix.dateTime.year) + String(fix.dateTime.month) + String(fix.dateTime.day));
+      // Serial << fix.dateTime;
+      // Serial.println();
+      // fix.dateTime += timeZoneOffset;
+      // Serial.println("After timezone: " + String(fix.dateTime));
+      // Serial << fix.dateTime;
+      // Serial.println();
+      // // Serial.println(String(fix.dateTime.day) + String(fix.dateTime.month) + String(fix.dateTime.year));
+      // Serial.println(String(fix.dateTime.year) + String(fix.dateTime.month) + String(fix.dateTime.day));
+      String test = String(fix.dateTime.year) + "-" + String(fix.dateTime.month+1) + "-" + String(fix.dateTime.day+1);
+      // fix.dateTime.print(test);
+      Serial.println("TEST: " + test);
+    }
     dateStr += formatTime(fix.dateTime.hours) + ":" +
                formatTime(fix.dateTime.minutes) + ":" +
                formatTime(fix.dateTime.seconds) + ",";
@@ -420,6 +443,10 @@ void loop()
       // we were seeing issues when just using raw GPS data
       outsideGeofence = !isInsideGeofence(strLat.toFloat(), strLon.toFloat());
 
+      debugPrint("raw date: " + String(fix.dateTime));
+      debugPrint("raw dateDay: " + String(fix.dateTime.day));
+      debugPrint("raw dateMonth: " + String(fix.dateTime.month));
+
       // Only save time and dates if we have a valid location
       // otherwise, it is using default settings
       lastValidDateTime = dateStr;
@@ -450,6 +477,8 @@ void loop()
 
     if (sd_init_successful) {
        writeToDataFile(dataStr);
+    } else {
+      debugPrint("sd not available");
     }
     debugPrint(dataStr);
   }
@@ -474,10 +503,11 @@ bool isInsideGeofence(float lat, float lon) {
                         (geofenceUpper.p2Lat - geofenceUpper.p1Lat);
     if (relativeLocLower > 0 || relativeLocUpper > 0 || lat > geofenceUpper.p1Lat) {
       inside = false;
-      writeToLogFile("OUTSIDE FENCE");
+      writeToLogFile("OUTSIDE FENCE at point (" +
+                       String(lat) + ", " + String(lon) + ")");
       // for debugging
       if (relativeLocLower > 0) {
-        writeToLogFile("Outside lower fence");
+        writeToLogFile("Outside lower fence.");
       } else if (relativeLocUpper > 0) {
         writeToLogFile("Outside upper fence");
       } else {
@@ -499,6 +529,7 @@ void writeToDataFile(String writeData)
   if (dataFile) {
     dataFile.println(writeData);
     dataFile.close();
+    debugPrint("successfully wrote to SD card");
   } else {
     writeToLogFile("error opening data file");
     debugPrint("file name is: " + dataFileName);
@@ -605,7 +636,10 @@ bool checkAltitudeForFalling()
   }
   if (gpsValid && gpsIsFalling) {
     // gpsIsFalling = true;
-    writeToLogFile("GPS recorded falling.");
+    writeToLogFile("GPS recorded falling at altitude " + 
+                    String(gpsAltitudeReadings[9]) + 
+                    " with highest recorded altitude being " + 
+                    String(gpsHighestAltitude));
   } else if (gpsValid) {
     debugPrint("not falling according to gps");
   }
@@ -657,7 +691,10 @@ bool checkAltitudeForFalling()
     barIsFalling = true;
   }
   if (barValid && barIsFalling) {
-    writeToLogFile("Barometric pressure recorded falling.");
+    writeToLogFile("Barometric pressure sensor recorded falling at altitude " + 
+                    String(barAltitudeReadings[9]) + 
+                    " with highest recorded altitude being " + 
+                    String(barHighestAltitude));
   } else if (barValid) {
     debugPrint("not falling according to bar");
   }
@@ -700,6 +737,7 @@ bool handleServoButtonPress()
     if (servoCurrentPos == servoClosePos) {
       writeToLogFile("Servo closed after button release");
       closedFromButton = true;
+      handlingServo = false;
     }
   }
 
