@@ -101,8 +101,6 @@ float barAltitudeReadings[readCount] = {0};
 float gpsAltitudeReadings[readCount] = {0};
 float gpsHighestAltitude = 0.0;
 float barHighestAltitude = 0.0;
-int gpsHighestAltitudeIndex = -1;
-int barHighestAltitudeIndex = -1;
 const int fallingAltitude = 100; // must drop this far to be considered falling
 bool isFalling = false;
 
@@ -550,9 +548,6 @@ void addAltitudeData(float newData, String dataType)
   if (dataType == "barometric") {
     if (newData > barHighestAltitude) {
       barHighestAltitude = newData;
-      barHighestAltitudeIndex = 0;
-    } else {
-      barHighestAltitudeIndex++;
     }
     // barHighestAltitude = max(newData, barHighestAltitude);
     // Move every reading by one, removing last point
@@ -568,9 +563,6 @@ void addAltitudeData(float newData, String dataType)
   } else if (dataType == "gps") {
     if (newData > gpsHighestAltitude) {
       gpsHighestAltitude = newData;
-      gpsHighestAltitudeIndex = 0;
-    } else {
-      gpsHighestAltitudeIndex++;
     }
     // gpsHighestAltitude = max(newData, gpsHighestAltitude);
     debugPrint("adding reading to gps readings " + String(newData));
@@ -611,17 +603,8 @@ bool checkAltitudeForFalling()
   float minVal = gpsAltitudeReadings[0];
   // First check gps. Do validity test at same time, fall test
   // is only valid if we have valid inputs
-  // for (int i = 0; i < readCount; i++) {
-  //   if (gpsAltitudeReadings[i] < 1.0) {
-  //     gpsValid = false;
-  //     break;
-  //   }
-  //   maxVal = max(gpsAltitudeReadings[i], maxVal);
-  //   minVal = min(gpsAltitudeReadings[i], minVal);
-  // }
   for (int i = 0; i < compareCount; i++) {
-    // int index = readCount-i-1;
-    int index = i;
+    int index = readCount-i-1;
     float reading = gpsAltitudeReadings[index];
     // debugPrint("gps index is: " + String(index));
     // debugPrint("gps reading is " + String(reading));
@@ -629,10 +612,8 @@ bool checkAltitudeForFalling()
       gpsValid = false;
       break;
     }
-    // We don't have enough readings to determine if we are below the highest
-    // altitude or not if the gpsHighestAltitudeIndex
     if ((gpsHighestAltitude - gpsAltitudeReadings[index]) 
-          < fallingAltitude || index > gpsHighestAltitude) {
+          < fallingAltitude) {
       // If any of the compared points aren't below the highest altitude,
       // don't mark as falling and break
       gpsIsFalling = false;
@@ -654,55 +635,32 @@ bool checkAltitudeForFalling()
   }
 
   // test barometric data
-  // barHighestAltitude = 23059.78;
-  barHighestAltitude = 303.41;
-  barAltitudeReadings[0] = 286.97;
-  barAltitudeReadings[1] = 303.41;
-  barAltitudeReadings[2] = 259.78;
-  barAltitudeReadings[3] = 218.03;
-  barAltitudeReadings[4] = 195.52;
-  barAltitudeReadings[5] = 195.18;
-  barAltitudeReadings[6] = 195.01;
-  barAltitudeReadings[7] = 194.16;
-  barAltitudeReadings[8] = 194.59;
-  barAltitudeReadings[9] = 194.5;
-  // barAltitudeReadings[9] = 194.75;
-  // barAltitudeReadings[0] = 22758.25;
-  // barAltitudeReadings[0] = 22810.27;
-  // barAltitudeReadings[1] = 22853.73;
-  // barAltitudeReadings[2] = 22888.41;
-  // barAltitudeReadings[3] = 22919.64;
-  // barAltitudeReadings[4] = 22954.77;
-  // barAltitudeReadings[5] = 23037.09;
-  // barAltitudeReadings[6] = 23059.78;
-  // barAltitudeReadings[7] = 22855.55;
-  // barAltitudeReadings[8] = 22654.02;
-  // barAltitudeReadings[9] = 22368.4;
-  // barAltitudeReadings[9] = 22088.34;
+  // barHighestAltitude = 303.41;
+  // barAltitudeReadings[0] = 286.97;
+  // barAltitudeReadings[1] = 303.41;
+  // barAltitudeReadings[2] = 259.78;
+  // barAltitudeReadings[3] = 218.03;
+  // barAltitudeReadings[4] = 195.52;
+  // barAltitudeReadings[5] = 195.18;
+  // barAltitudeReadings[6] = 195.01;
+  // barAltitudeReadings[7] = 194.16;
+  // barAltitudeReadings[8] = 194.59;
+  // barAltitudeReadings[9] = 194.5;
+  // barAltitudeReadings[9] = 194.75
 
   maxVal = barAltitudeReadings[0];
   minVal = barAltitudeReadings[0];
   // Now check barometric readings
-  // for (int i = 0; i < readCount; i ++) {
-  //   if (barAltitudeReadings[i] < 1.0) {
-  //     barValid = false;
-  //     break;
-  //   }
-  //   maxVal = max(barAltitudeReadings[i], maxVal);
-  //   minVal = min(barAltitudeReadings[i], minVal);
-  // }
   for (int i = 0; i < compareCount; i++) {
     // debugPrint("reading bar index " + String(readCount-i));
-    // int index = readCount-i-1;
-    int index = i;
+    int index = readCount-i-1;
     float reading = barAltitudeReadings[index];
     if (reading < 1.0) {
       barValid = false;
       break;
     }
     if ((barHighestAltitude - barAltitudeReadings[index]) 
-          < fallingAltitude || index > barHighestAltitude) {
-          // < fallingAltitude) {
+          < fallingAltitude) {
       // If any of the compared points aren't below the highest altitude,
       // don't mark as falling and break
       barIsFalling = false;
