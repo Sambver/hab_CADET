@@ -19,7 +19,9 @@
 #include <Wire.h>
 #include "BlueDot_BME280_TSL2591.h"
 BlueDot_BME280_TSL2591 bme280;
+bool bmeFound = false;
 
+// GPS configuration
 NMEAGPS  gps; // This parses the GPS characters
 gps_fix  fix; // This holds on to the latest values
 
@@ -99,9 +101,10 @@ float barAltitudeReadings[readCount] = {0};
 float gpsAltitudeReadings[readCount] = {0};
 float gpsHighestAltitude = 0.0;
 float barHighestAltitude = 0.0;
+int gpsHighestAltitudeIndex = -1;
+int barHighestAltitudeIndex = -1;
 const int fallingAltitude = 100; // must drop this far to be considered falling
 bool isFalling = false;
-// const int timeZoneOffset = -20000;
 
 uint32_t timer = millis();
 bool sd_init_successful = false;
@@ -333,11 +336,13 @@ void setupBarometricSensor()
   if (bme280.init_BME280() != 0x60)  
   {
     writeToLogFile("BME280 could not be found.");
+    bmeFound = false;
   }
-  // else
-  // {
-  //   writeToLogFile("BME280 detected");
-  // }
+  else
+  {
+    // writeToLogFile("BME280 detected");
+    bmeFound = true;
+  }
 }
 
 void setupBalloonAttachServo()
@@ -360,7 +365,7 @@ void loop()
   // approximately every 10 seconds or so, print out the current stats
   // includes both GPS stats (date/time/location/etc) and temperature
   if (millis() - timer > readTime && gps.available(gpsPort)) {
-    fix = gps.read();
+    fix = gps.read(); // NeoGPS
     
     // Sends command to retrieve temperatures before querying
     onewireTempSensors.requestTemperatures();
@@ -393,27 +398,13 @@ void loop()
     lastValidDateTime = "";
     String dateStr;
     String dataStr;
-    // adjustTime(fix.dateTime);
-    if (fix.valid.time) {
-      // Serial.println("Before timezone: " + String(fix.dateTime));
-      // Serial.println(String(fix.dateTime.year) + String(fix.dateTime.month) + String(fix.dateTime.day));
-      // Serial << fix.dateTime;
-      // Serial.println();
-      // fix.dateTime += timeZoneOffset;
-      // Serial.println("After timezone: " + String(fix.dateTime));
-      // Serial << fix.dateTime;
-      // Serial.println();
-      // // Serial.println(String(fix.dateTime.day) + String(fix.dateTime.month) + String(fix.dateTime.year));
-      // Serial.println(String(fix.dateTime.year) + String(fix.dateTime.month) + String(fix.dateTime.day));
-      String test = String(fix.dateTime.year) + "-" + String(fix.dateTime.month+1) + "-" + String(fix.dateTime.day+1);
-      // fix.dateTime.print(test);
-      Serial.println("TEST: " + test);
-    }
+    adjustTime(fix.dateTime);
+
     dateStr += formatTime(fix.dateTime.hours) + ":" +
                formatTime(fix.dateTime.minutes) + ":" +
                formatTime(fix.dateTime.seconds) + ",";
-    dateStr += String(fix.dateTime.day) + "/" + 
-               String(fix.dateTime.month) + "/" +
+    dateStr += String(fix.dateTime.month) + "/" +
+               String(fix.dateTime.date) + "/" + 
                String(fix.dateTime.year) + ",";
     dataStr += dateStr;
 
@@ -422,14 +413,6 @@ void loop()
 
     dataStr += barSensorData;
     dataStr += powerSensorData;
-
-    // Test 
-    // outside fence:
-    // outsideGeofence = !isInsideGeofence(43.15061, -82.67281);
-    // outsideGeofence = !isInsideGeofence(43.92313, -82.89254);
-    // inside fence:
-    // outsideGeofence = !isInsideGeofence(43.08570, -83.29740);
-    // outsideGeofence = !isInsideGeofence(43.09083, -83.29861);
 
     if (fix.valid.location && fix.valid.altitude) {
       String strLat = String(fix.latitude(), 6);
@@ -441,11 +424,17 @@ void loop()
       // TODO: get working without cast to String
       // converting to string and back to float because
       // we were seeing issues when just using raw GPS data
-      outsideGeofence = !isInsideGeofence(strLat.toFloat(), strLon.toFloat());
+      if (!outsideGeofence) {
+        // Test 
+        // outside fence:
+        // outsideGeofence = !isInsideGeofence(43.15061, -82.67281);
+        // outsideGeofence = !isInsideGeofence(43.92313, -82.89254);
+        // inside fence:
+        // outsideGeofence = !isInsideGeofence(43.08570, -83.29740);
+        // outsideGeofence = !isInsideGeofence(43.09083, -83.29861);
 
-      debugPrint("raw date: " + String(fix.dateTime));
-      debugPrint("raw dateDay: " + String(fix.dateTime.day));
-      debugPrint("raw dateMonth: " + String(fix.dateTime.month));
+        outsideGeofence = !isInsideGeofence(strLat.toFloat(), strLon.toFloat());
+      }
 
       // Only save time and dates if we have a valid location
       // otherwise, it is using default settings
@@ -504,7 +493,7 @@ bool isInsideGeofence(float lat, float lon) {
     if (relativeLocLower > 0 || relativeLocUpper > 0 || lat > geofenceUpper.p1Lat) {
       inside = false;
       writeToLogFile("OUTSIDE FENCE at point (" +
-                       String(lat) + ", " + String(lon) + ")");
+                       String(lat, 6) + ", " + String(lon, 6) + ")");
       // for debugging
       if (relativeLocLower > 0) {
         writeToLogFile("Outside lower fence.");
@@ -530,6 +519,7 @@ void writeToDataFile(String writeData)
     dataFile.println(writeData);
     dataFile.close();
     debugPrint("successfully wrote to SD card");
+    delay(100);
   } else {
     writeToLogFile("error opening data file");
     debugPrint("file name is: " + dataFileName);
@@ -546,6 +536,7 @@ void writeToLogFile(String writeData)
     logFile.println(lastValidDateTime + " ");    
     logFile.println(writeData);
     logFile.close();
+    delay(100);
   } else {
     debugPrint("error opening log file");
   }
@@ -557,8 +548,13 @@ void writeToLogFile(String writeData)
 void addAltitudeData(float newData, String dataType) 
 {
   if (dataType == "barometric") {
-    gpsHighestAltitude = max(newData, gpsHighestAltitude);
-    barHighestAltitude = max(newData, barHighestAltitude);
+    if (newData > barHighestAltitude) {
+      barHighestAltitude = newData;
+      barHighestAltitudeIndex = 0;
+    } else {
+      barHighestAltitudeIndex++;
+    }
+    // barHighestAltitude = max(newData, barHighestAltitude);
     // Move every reading by one, removing last point
     for (int i = readCount-1; i > 0; i--) {
       barAltitudeReadings[i] = barAltitudeReadings[i-1];
@@ -570,6 +566,13 @@ void addAltitudeData(float newData, String dataType)
     }
     debugPrint("new barometric readings: " + barReadings);
   } else if (dataType == "gps") {
+    if (newData > gpsHighestAltitude) {
+      gpsHighestAltitude = newData;
+      gpsHighestAltitudeIndex = 0;
+    } else {
+      gpsHighestAltitudeIndex++;
+    }
+    // gpsHighestAltitude = max(newData, gpsHighestAltitude);
     debugPrint("adding reading to gps readings " + String(newData));
     // Move every reading by one, removing last point
     for (int i = readCount-1; i > 0; i--) {
@@ -617,7 +620,8 @@ bool checkAltitudeForFalling()
   //   minVal = min(gpsAltitudeReadings[i], minVal);
   // }
   for (int i = 0; i < compareCount; i++) {
-    int index = readCount-i-1;
+    // int index = readCount-i-1;
+    int index = i;
     float reading = gpsAltitudeReadings[index];
     // debugPrint("gps index is: " + String(index));
     // debugPrint("gps reading is " + String(reading));
@@ -625,8 +629,10 @@ bool checkAltitudeForFalling()
       gpsValid = false;
       break;
     }
+    // We don't have enough readings to determine if we are below the highest
+    // altitude or not if the gpsHighestAltitudeIndex
     if ((gpsHighestAltitude - gpsAltitudeReadings[index]) 
-          < fallingAltitude) {
+          < fallingAltitude || index > gpsHighestAltitude) {
       // If any of the compared points aren't below the highest altitude,
       // don't mark as falling and break
       gpsIsFalling = false;
@@ -649,7 +655,19 @@ bool checkAltitudeForFalling()
 
   // test barometric data
   // barHighestAltitude = 23059.78;
-  // // barAltitudeReadings[0] = 22758.25;
+  barHighestAltitude = 303.41;
+  barAltitudeReadings[0] = 286.97;
+  barAltitudeReadings[1] = 303.41;
+  barAltitudeReadings[2] = 259.78;
+  barAltitudeReadings[3] = 218.03;
+  barAltitudeReadings[4] = 195.52;
+  barAltitudeReadings[5] = 195.18;
+  barAltitudeReadings[6] = 195.01;
+  barAltitudeReadings[7] = 194.16;
+  barAltitudeReadings[8] = 194.59;
+  barAltitudeReadings[9] = 194.5;
+  // barAltitudeReadings[9] = 194.75;
+  // barAltitudeReadings[0] = 22758.25;
   // barAltitudeReadings[0] = 22810.27;
   // barAltitudeReadings[1] = 22853.73;
   // barAltitudeReadings[2] = 22888.41;
@@ -675,14 +693,16 @@ bool checkAltitudeForFalling()
   // }
   for (int i = 0; i < compareCount; i++) {
     // debugPrint("reading bar index " + String(readCount-i));
-    int index = readCount-i-1;
+    // int index = readCount-i-1;
+    int index = i;
     float reading = barAltitudeReadings[index];
     if (reading < 1.0) {
       barValid = false;
       break;
     }
     if ((barHighestAltitude - barAltitudeReadings[index]) 
-          < fallingAltitude) {
+          < fallingAltitude || index > barHighestAltitude) {
+          // < fallingAltitude) {
       // If any of the compared points aren't below the highest altitude,
       // don't mark as falling and break
       barIsFalling = false;
@@ -702,10 +722,89 @@ bool checkAltitudeForFalling()
     debugPrint("not enough data points to test for bar falling");
   }
 
-  // only look for barometric pressure for now
-  return barIsFalling;
+  // bool retIsFalling = barIsFalling || ();
+  // Look for barometric pressure falling. If the barometric pressure
+  // sensor was not found, look for gps falling
+  return (barIsFalling || (gpsIsFalling && !bmeFound));
+  // return barIsFalling;
   // return (barIsFalling || gpsIsFalling);
 }
+
+static const int32_t          zone_hours   = -5L; // EST
+static const int32_t          zone_minutes =  0L; // usually zero
+static const NeoGPS::clock_t  zone_offset  =
+                                zone_hours   * NeoGPS::SECONDS_PER_HOUR +
+                                zone_minutes * NeoGPS::SECONDS_PER_MINUTE;
+
+// Uncomment one DST changeover rule, or define your own:
+#define USA_DST
+//#define EU_DST
+
+#if defined(USA_DST)
+  static const uint8_t springMonth =  3;
+  static const uint8_t springDate  = 14; // latest 2nd Sunday
+  static const uint8_t springHour  =  2;
+  static const uint8_t fallMonth   = 11;
+  static const uint8_t fallDate    =  7; // latest 1st Sunday
+  static const uint8_t fallHour    =  2;
+  #define CALCULATE_DST
+
+#elif defined(EU_DST)
+  static const uint8_t springMonth =  3;
+  static const uint8_t springDate  = 31; // latest last Sunday
+  static const uint8_t springHour  =  1;
+  static const uint8_t fallMonth   = 10;
+  static const uint8_t fallDate    = 31; // latest last Sunday
+  static const uint8_t fallHour    =  1;
+  #define CALCULATE_DST
+#endif
+
+void adjustTime( NeoGPS::time_t & dt )
+{
+  NeoGPS::clock_t seconds = dt; // convert date/time structure to seconds
+
+  #ifdef CALCULATE_DST
+    //  Calculate DST changeover times once per reset and year!
+    static NeoGPS::time_t  changeover;
+    static NeoGPS::clock_t springForward, fallBack;
+
+    if ((springForward == 0) || (changeover.year != dt.year)) {
+
+      //  Calculate the spring changeover time (seconds)
+      changeover.year    = dt.year;
+      changeover.month   = springMonth;
+      changeover.date    = springDate;
+      changeover.hours   = springHour;
+      changeover.minutes = 0;
+      changeover.seconds = 0;
+      changeover.set_day();
+      // Step back to a Sunday, if day != SUNDAY
+      changeover.date -= (changeover.day - NeoGPS::time_t::SUNDAY);
+      springForward = (NeoGPS::clock_t) changeover;
+
+      //  Calculate the fall changeover time (seconds)
+      changeover.month   = fallMonth;
+      changeover.date    = fallDate;
+      changeover.hours   = fallHour - 1; // to account for the "apparent" DST +1
+      changeover.set_day();
+      // Step back to a Sunday, if day != SUNDAY
+      changeover.date -= (changeover.day - NeoGPS::time_t::SUNDAY);
+      fallBack = (NeoGPS::clock_t) changeover;
+    }
+  #endif
+
+  //  First, offset from UTC to the local timezone
+  seconds += zone_offset;
+
+  #ifdef CALCULATE_DST
+    //  Then add an hour if DST is in effect
+    if ((springForward <= seconds) && (seconds < fallBack))
+      seconds += NeoGPS::SECONDS_PER_HOUR;
+  #endif
+
+  dt = seconds; // convert seconds back to a date/time structure
+
+} // adjustTime
 
 bool handleServoButtonPress()
 {
