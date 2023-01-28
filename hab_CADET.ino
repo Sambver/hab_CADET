@@ -83,7 +83,7 @@ int analogTempInput = 0;
 #define WRITE_PIN 53
 
 // set to true if you want output to Serial monitor
-#define DEBUG true
+#define DEBUG false
 
 // don't include file type for now, that is
 // determined at initialization, as well as
@@ -103,7 +103,8 @@ float gpsHighestAltitude = 0.0;
 float barHighestAltitude = 0.0;
 int gpsHighestAltitudeIndex = -1;
 int barHighestAltitudeIndex = -1;
-const int fallingAltitude = 100; // must drop this far to be considered falling
+// const int fallingAltitude = 100; // must drop this far to be considered falling
+const int fallingAltitude = 30; // must drop this far to be considered falling
 bool isFalling = false;
 
 uint32_t timer = millis();
@@ -392,7 +393,9 @@ void loop()
     timer = millis(); // reset the timer
 
     barSensorData += String(barAltitude) + ",";
-    addAltitudeData(barAltitude, "barometric");
+    if (bmeFound) {
+      addAltitudeData(barAltitude, "barometric");
+    }
 
     // Reset lastValidDateTime and only set if fix is valid
     lastValidDateTime = "";
@@ -448,6 +451,20 @@ void loop()
       // print raw data for debugging
       dataStr += "unable to retrieve data";
     }
+
+    // add test data to barometric pressure
+    // int pointSize = 20;
+    // float points[] = {194.75, 194.50, 194.59, 194.16, 195.01,
+    //                   195.18, 195.52, 218.03, 259.78, 303.41,
+    //                   286.97, 100.00, 99.00, 105.00, 110.00,
+    //                   102.00, 90.00, 94.00, 50.00, 45.00};
+    // for (int i = 0; i < pointSize; i++) {
+    //   // debugPrint("adding point " + String(points[i]));
+    //   addAltitudeData(points[i], "barometric");
+    //   checkAltitudeForFalling();
+    //   delay(1000);
+    // }
+    // delay(10000);
 
     // check to see if falling
     // don't need to check if we are already falling
@@ -557,7 +574,15 @@ void addAltitudeData(float newData, String dataType)
     // barHighestAltitude = max(newData, barHighestAltitude);
     // Move every reading by one, removing last point
     for (int i = readCount-1; i > 0; i--) {
+      // debugPrint("moving " + String(i) + " to point " + String(i-1));
+      // debugPrint("moving point " + String(barAltitudeReadings[i-1]) + " at index " + String(i-1) +
+      //             " to index " + String(i));
       barAltitudeReadings[i] = barAltitudeReadings[i-1];
+      // String inBarReadings;
+      // for (int i = 0; i < readCount; i++) {
+      //   inBarReadings += String(barAltitudeReadings[i]) + " ";
+      // }
+      // debugPrint("intermediate barAltitudeReadings: " + String(inBarReadings));
     }
     barAltitudeReadings[0] = newData;
     String barReadings;
@@ -655,18 +680,20 @@ bool checkAltitudeForFalling()
 
   // test barometric data
   // barHighestAltitude = 23059.78;
-  barHighestAltitude = 303.41;
-  barAltitudeReadings[0] = 286.97;
-  barAltitudeReadings[1] = 303.41;
-  barAltitudeReadings[2] = 259.78;
-  barAltitudeReadings[3] = 218.03;
-  barAltitudeReadings[4] = 195.52;
-  barAltitudeReadings[5] = 195.18;
-  barAltitudeReadings[6] = 195.01;
-  barAltitudeReadings[7] = 194.16;
-  barAltitudeReadings[8] = 194.59;
-  barAltitudeReadings[9] = 194.5;
+  // barHighestAltitude = 303.41;
+  // barAltitudeReadings[0] = 286.97;
+  // barAltitudeReadings[1] = 303.41;
+  // barAltitudeReadings[2] = 259.78;
+  // barAltitudeReadings[3] = 218.03;
+  // barAltitudeReadings[4] = 195.52;
+  // barAltitudeReadings[5] = 195.18;
+  // barAltitudeReadings[6] = 195.01;
+  // barAltitudeReadings[7] = 194.16;
+  // barAltitudeReadings[8] = 194.59;
+  // barAltitudeReadings[9] = 194.5;
   // barAltitudeReadings[9] = 194.75;
+
+
   // barAltitudeReadings[0] = 22758.25;
   // barAltitudeReadings[0] = 22810.27;
   // barAltitudeReadings[1] = 22853.73;
