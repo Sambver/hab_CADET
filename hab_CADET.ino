@@ -42,6 +42,9 @@ const bool servoAttached = true;
 // set sample time in milliseconds
 const int readTime = 1000;
 
+// set sample time in milliseconds
+const int readTime = 5000;
+
 // geofence
 const bool useGeofence = true; // turn on if using geofence to drop payload
 bool outsideGeofence = false;
@@ -347,6 +350,10 @@ void setupBarometricSensor()
     // writeToLogFile("BME280 detected");
     bmeFound = true;
   }
+  // else
+  // {
+  //   writeToLogFile("BME280 detected");
+  // }
 }
 
 void setupBalloonAttachServo()
