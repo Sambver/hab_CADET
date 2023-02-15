@@ -37,9 +37,10 @@ const int servoClosePos = 70;
 int servoCurrentPos = 0;
 const int servoPin = 9;
 bool closedFromButton = true;
+const bool servoAttached = true;
 
 // set sample time in milliseconds
-const int readTime = 5000;
+const int readTime = 1000;
 
 // geofence
 const bool useGeofence = true; // turn on if using geofence to drop payload
@@ -83,7 +84,7 @@ int analogTempInput = 0;
 #define WRITE_PIN 53
 
 // set to true if you want output to Serial monitor
-#define DEBUG false
+#define DEBUG true
 
 // don't include file type for now, that is
 // determined at initialization, as well as
@@ -103,11 +104,12 @@ float gpsHighestAltitude = 0.0;
 float barHighestAltitude = 0.0;
 int gpsHighestAltitudeIndex = -1;
 int barHighestAltitudeIndex = -1;
-// const int fallingAltitude = 100; // must drop this far to be considered falling
-const int fallingAltitude = 30; // must drop this far to be considered falling
+const int minAltitude = 750; // Must be at least this far before dropping (so that the parachute is deployed)
+const int fallingAltitude = 100; // must drop this far to be considered falling
 bool isFalling = false;
 
 uint32_t timer = millis();
+uint32_t timerDebug = millis();
 bool sd_init_successful = false;
 
 void setup() {
@@ -136,7 +138,6 @@ void setup() {
     // Write first line to SD card
     initDataFile();
     initLogFile();
-    writeToLogFile("In arduino init");
   }
   setupSensors();
 }
@@ -222,9 +223,11 @@ void setupSensors()
   } else {
     powerSensorFound = true;
   }
-  // setup servo that connects balloon to payload
-  // as well as tactile button that controls servo
-  setupBalloonAttachServo();
+  if (servoAttached) {
+    // setup servo that connects balloon to payload
+    // as well as tactile button that controls servo
+    setupBalloonAttachServo();
+  }
 }
 
 void setupBarometricSensor()
@@ -365,7 +368,7 @@ void loop()
     debugPrint("button is being pressed");
   // approximately every 10 seconds or so, print out the current stats
   // includes both GPS stats (date/time/location/etc) and temperature
-  if (millis() - timer > readTime && gps.available(gpsPort)) {
+  if (millis() - timer > readTime /*&& gps.available(gpsPort)*/) {
     fix = gps.read(); // NeoGPS
     
     // Sends command to retrieve temperatures before querying
@@ -452,18 +455,30 @@ void loop()
       dataStr += "unable to retrieve data";
     }
 
-    // add test data to barometric pressure
-    // int pointSize = 20;
-    // float points[] = {194.75, 194.50, 194.59, 194.16, 195.01,
-    //                   195.18, 195.52, 218.03, 259.78, 303.41,
-    //                   286.97, 100.00, 99.00, 105.00, 110.00,
-    //                   102.00, 90.00, 94.00, 50.00, 45.00};
+    // if (millis() > 2400000) {
+    // // if (millis() > 50000) {
+    //   writeToLogFile("Triggering servo for debug testing after 40 minutes");
+    //   handleFenceBreakOrFalling();
+    // }
+
+    // // add test data to barometric pressure
+    // int pointSize = 45;
+    // float points[] = {204.43, 204.6, 204.52, 204.18, 204.6,
+    //                   204.35, 204.52, 204.6, 204.18, 204.43,
+    //                   204.35, 204.43, 205.79, 240.33, 310.96,
+    //                   386.23, 460.4, 540.71, 616.18, 684.9,
+    //                   755.61, 828.08, 897.07, 968.08, 1038.76,
+    //                   1124.88, 1202.56, 23001.38, 23037.09, 23059.78,
+    //                   22855.55, 22654.02, 22368.4, 22088.34, 21797.27,
+    //                   21522.79, 21216.25, 20939.99, 20652.88, 20363.88,
+    //                   20087.91, 19807.08, 19534.37, 19257.83, 18974.81};
     // for (int i = 0; i < pointSize; i++) {
     //   // debugPrint("adding point " + String(points[i]));
     //   addAltitudeData(points[i], "barometric");
     //   checkAltitudeForFalling();
     //   delay(1000);
     // }
+    // debugPrint("done with testing");
     // delay(10000);
 
     // check to see if falling
@@ -574,22 +589,13 @@ void addAltitudeData(float newData, String dataType)
     // barHighestAltitude = max(newData, barHighestAltitude);
     // Move every reading by one, removing last point
     for (int i = readCount-1; i > 0; i--) {
-      // debugPrint("moving " + String(i) + " to point " + String(i-1));
-      // debugPrint("moving point " + String(barAltitudeReadings[i-1]) + " at index " + String(i-1) +
-      //             " to index " + String(i));
       barAltitudeReadings[i] = barAltitudeReadings[i-1];
-      // String inBarReadings;
-      // for (int i = 0; i < readCount; i++) {
-      //   inBarReadings += String(barAltitudeReadings[i]) + " ";
-      // }
-      // debugPrint("intermediate barAltitudeReadings: " + String(inBarReadings));
     }
     barAltitudeReadings[0] = newData;
     String barReadings;
     for (int i = 0; i < readCount; i++) {
       barReadings += String(barAltitudeReadings[i]) + " ";
     }
-    debugPrint("new barometric readings: " + barReadings);
   } else if (dataType == "gps") {
     if (newData > gpsHighestAltitude) {
       gpsHighestAltitude = newData;
@@ -620,30 +626,8 @@ bool checkAltitudeForFalling()
   bool gpsIsFalling = false;
   bool gpsValid = true;
   bool barValid = true;
-  // set test readings
-  // gpsHighestAltitude = 27448.2;
-  // gpsAltitudeReadings[0] = 27132.8;
-  // gpsAltitudeReadings[1] = 27268.6;
-  // gpsAltitudeReadings[2] = 27339.2;
-  // gpsAltitudeReadings[3] = 27406.5;
-  // gpsAltitudeReadings[4] = 27448.2;
-  // gpsAltitudeReadings[5] = 26582.7;
-  // gpsAltitudeReadings[6] = 26105.1;
-  // gpsAltitudeReadings[7] = 25620.7;
-  // gpsAltitudeReadings[8] = 25131.3;
-  // gpsAltitudeReadings[9]= 24164.5;
   float maxVal = gpsAltitudeReadings[0];
   float minVal = gpsAltitudeReadings[0];
-  // First check gps. Do validity test at same time, fall test
-  // is only valid if we have valid inputs
-  // for (int i = 0; i < readCount; i++) {
-  //   if (gpsAltitudeReadings[i] < 1.0) {
-  //     gpsValid = false;
-  //     break;
-  //   }
-  //   maxVal = max(gpsAltitudeReadings[i], maxVal);
-  //   minVal = min(gpsAltitudeReadings[i], minVal);
-  // }
   for (int i = 0; i < compareCount; i++) {
     // int index = readCount-i-1;
     int index = i;
@@ -663,12 +647,14 @@ bool checkAltitudeForFalling()
       gpsIsFalling = false;
       break;
     }
-    gpsIsFalling = true;
+    if (gpsHighestAltitude > minAltitude) {
+      gpsIsFalling = true;
+    }
   }
   if (gpsValid && gpsIsFalling) {
     // gpsIsFalling = true;
     writeToLogFile("GPS recorded falling at altitude " + 
-                    String(gpsAltitudeReadings[9]) + 
+                    String(gpsAltitudeReadings[0]) + 
                     " with highest recorded altitude being " + 
                     String(gpsHighestAltitude));
   } else if (gpsValid) {
@@ -678,46 +664,8 @@ bool checkAltitudeForFalling()
     debugPrint("not enough data points to test for gps falling");
   }
 
-  // test barometric data
-  // barHighestAltitude = 23059.78;
-  // barHighestAltitude = 303.41;
-  // barAltitudeReadings[0] = 286.97;
-  // barAltitudeReadings[1] = 303.41;
-  // barAltitudeReadings[2] = 259.78;
-  // barAltitudeReadings[3] = 218.03;
-  // barAltitudeReadings[4] = 195.52;
-  // barAltitudeReadings[5] = 195.18;
-  // barAltitudeReadings[6] = 195.01;
-  // barAltitudeReadings[7] = 194.16;
-  // barAltitudeReadings[8] = 194.59;
-  // barAltitudeReadings[9] = 194.5;
-  // barAltitudeReadings[9] = 194.75;
-
-
-  // barAltitudeReadings[0] = 22758.25;
-  // barAltitudeReadings[0] = 22810.27;
-  // barAltitudeReadings[1] = 22853.73;
-  // barAltitudeReadings[2] = 22888.41;
-  // barAltitudeReadings[3] = 22919.64;
-  // barAltitudeReadings[4] = 22954.77;
-  // barAltitudeReadings[5] = 23037.09;
-  // barAltitudeReadings[6] = 23059.78;
-  // barAltitudeReadings[7] = 22855.55;
-  // barAltitudeReadings[8] = 22654.02;
-  // barAltitudeReadings[9] = 22368.4;
-  // barAltitudeReadings[9] = 22088.34;
-
   maxVal = barAltitudeReadings[0];
   minVal = barAltitudeReadings[0];
-  // Now check barometric readings
-  // for (int i = 0; i < readCount; i ++) {
-  //   if (barAltitudeReadings[i] < 1.0) {
-  //     barValid = false;
-  //     break;
-  //   }
-  //   maxVal = max(barAltitudeReadings[i], maxVal);
-  //   minVal = min(barAltitudeReadings[i], minVal);
-  // }
   for (int i = 0; i < compareCount; i++) {
     // debugPrint("reading bar index " + String(readCount-i));
     // int index = readCount-i-1;
@@ -735,11 +683,13 @@ bool checkAltitudeForFalling()
       barIsFalling = false;
       break;
     }
-    barIsFalling = true;
+    if (barHighestAltitude > minAltitude) {
+      barIsFalling = true;
+    }
   }
   if (barValid && barIsFalling) {
     writeToLogFile("Barometric pressure sensor recorded falling at altitude " + 
-                    String(barAltitudeReadings[9]) + 
+                    String(barAltitudeReadings[0]) + 
                     " with highest recorded altitude being " + 
                     String(barHighestAltitude));
   } else if (barValid) {
@@ -752,9 +702,8 @@ bool checkAltitudeForFalling()
   // bool retIsFalling = barIsFalling || ();
   // Look for barometric pressure falling. If the barometric pressure
   // sensor was not found, look for gps falling
+
   return (barIsFalling || (gpsIsFalling && !bmeFound));
-  // return barIsFalling;
-  // return (barIsFalling || gpsIsFalling);
 }
 
 static const int32_t          zone_hours   = -5L; // EST
@@ -835,6 +784,9 @@ void adjustTime( NeoGPS::time_t & dt )
 
 bool handleServoButtonPress()
 {
+  if (!servoAttached) {
+    return false;
+  }
   // if the servo is open, or we are currently closing the servo,
   // we pass true so that the gps read knows to pause
   // might not be needed, will test
@@ -871,7 +823,7 @@ bool handleServoButtonPress()
 }
 
 void handleFenceBreakOrFalling() {
-  if (servoCurrentPos < servoOpenPos) {
+  if (servoCurrentPos < servoOpenPos && servoAttached) {
     writeToLogFile("Servo opening automatically. Disconnecting from balloon");
     servoCurrentPos = servoOpenPos;
     balloonAttachServo.write(servoCurrentPos);
