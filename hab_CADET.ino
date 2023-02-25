@@ -42,6 +42,10 @@ const bool servoAttached = true;
 // set sample time in milliseconds
 const int readTime = 1000;
 
+// keeps track of how many times the chute deployer
+// has been powered on
+int deployerCount = 0;
+
 // geofence
 const bool useGeofence = true; // turn on if using geofence to drop payload
 bool outsideGeofence = false;
@@ -84,7 +88,7 @@ int analogTempInput = 0;
 #define WRITE_PIN 53
 
 // set to true if you want output to Serial monitor
-#define DEBUG true
+#define DEBUG false
 
 // don't include file type for now, that is
 // determined at initialization, as well as
@@ -120,10 +124,11 @@ void setup() {
     delay(5000);
     debugPrint("Serial begin");
   }
-  // TODO: remove
   // initialize digital pin LED_BUILTIN as an output.
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
+  // initialize D12 as chute deployer output
+  pinMode(12, OUTPUT);
 
   // see if the card is present and can be initialized
   // keep running either way, because data is being recorded
@@ -368,8 +373,13 @@ void loop()
     debugPrint("button is being pressed");
   // approximately every 10 seconds or so, print out the current stats
   // includes both GPS stats (date/time/location/etc) and temperature
-  if (millis() - timer > readTime /*&& gps.available(gpsPort)*/) {
+  if (millis() - timer > readTime && gps.available(gpsPort)) {
     fix = gps.read(); // NeoGPS
+    if (fix.valid.altitude) {
+      digitalWrite(LED_BUILTIN, LOW);
+    } else {
+      digitalWrite(LED_BUILTIN, HIGH);
+    }
     
     // Sends command to retrieve temperatures before querying
     onewireTempSensors.requestTemperatures();
@@ -534,11 +544,7 @@ bool isInsideGeofence(float lat, float lon) {
       } else {
         writeToLogFile("Above upper fence");
       }
-    } else {
-      debugPrint("inside fence");
     }
-  } else {
-    debugPrint("inside fence");
   }
 
   return inside;
@@ -603,8 +609,6 @@ void addAltitudeData(float newData, String dataType)
     } else {
       gpsHighestAltitudeIndex++;
     }
-    // gpsHighestAltitude = max(newData, gpsHighestAltitude);
-    debugPrint("adding reading to gps readings " + String(newData));
     // Move every reading by one, removing last point
     for (int i = readCount-1; i > 0; i--) {
       gpsAltitudeReadings[i] = gpsAltitudeReadings[i-1];
@@ -614,8 +618,6 @@ void addAltitudeData(float newData, String dataType)
     for (int i = 0; i < readCount; i++) {
       gpsReadings += String(gpsAltitudeReadings[i]) + " ";
     }
-
-    debugPrint("new gps readings: " + gpsReadings);
   }
 }
 
@@ -657,8 +659,6 @@ bool checkAltitudeForFalling()
                     String(gpsAltitudeReadings[0]) + 
                     " with highest recorded altitude being " + 
                     String(gpsHighestAltitude));
-  } else if (gpsValid) {
-    debugPrint("not falling according to gps");
   }
   if (!gpsValid) {
     debugPrint("not enough data points to test for gps falling");
@@ -692,8 +692,6 @@ bool checkAltitudeForFalling()
                     String(barAltitudeReadings[0]) + 
                     " with highest recorded altitude being " + 
                     String(barHighestAltitude));
-  } else if (barValid) {
-    debugPrint("not falling according to bar");
   }
   if (!barValid) {
     debugPrint("not enough data points to test for bar falling");
@@ -823,10 +821,15 @@ bool handleServoButtonPress()
 }
 
 void handleFenceBreakOrFalling() {
+  if (deployerCount < 20) {
+    digitalWrite(12, HIGH);
+    delay(100);
+    digitalWrite(12, LOW);
+    deployerCount++;
+  }
   if (servoCurrentPos < servoOpenPos && servoAttached) {
     writeToLogFile("Servo opening automatically. Disconnecting from balloon");
     servoCurrentPos = servoOpenPos;
     balloonAttachServo.write(servoCurrentPos);
   }
-  digitalWrite(LED_BUILTIN, HIGH);
 }
