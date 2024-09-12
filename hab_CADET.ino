@@ -44,6 +44,7 @@ const float burnAltitudeLimit = 600;
 // (does not include burn cycle because of button press)
 bool burnReleaseComplete = false;
 bool releaseBurnInProgress = false;
+bool readOnce = false;
 
 // geofence
 const bool useGeofence = true; // turn on if using geofence to drop payload
@@ -58,9 +59,8 @@ struct Geofence {
 };
 
 // Geofence geofenceLower = {43.0869, -83.29721, 43.08184, -83.30335};
-Geofence geofenceLower = {42.98269, -82.82611, 41.70606, -83.82611};
-Geofence geofenceUpper = {43.84309, -83.06529, 42.98269, -82.82611};
-Geofence geofenceOhio = {43.84309, -83.06529, 42.98269, -82.82611};
+Geofence geofenceLower = {43.011145, -82.781035, 41.728951, -83.876630};
+Geofence geofenceUpper = {43.854645, -82.983770, 43.011145, -82.781035};
 
 // Geofence geofences[] = {geofenceLower, geofenceUpper, geofenceOhio};
 
@@ -75,7 +75,7 @@ const int inputButtonPin = 10;
 
 // Setup a oneWire instance to communicate with any OneWire devices  
 // (not just Maxim/Dallas temperature ICs) 
-OneWire oneWire(TEMP_WIRE_BUS); 
+OneWire oneWire(TEMP_WIRE_BUS);
 /********************************************************************/
 // Pass our oneWire reference to Dallas Temperature. 
 DallasTemperature onewireTempSensors(&oneWire);
@@ -103,7 +103,7 @@ String lastValidDateTime;
 // how many readings to keep track of
 const int readCount = 10;
 // points to compare to max altitude to determine if falling
-const int compareCount = 3;
+const int compareCount = 4;
 float barAltitudeReadings[readCount] = {0};
 float gpsAltitudeReadings[readCount] = {0};
 float gpsHighestAltitude = 0.0;
@@ -111,7 +111,7 @@ float barHighestAltitude = 0.0;
 int gpsHighestAltitudeIndex = -1;
 int barHighestAltitudeIndex = -1;
 const int minAltitude = 750; // Must be at least this far before dropping (so that the parachute is deployed)
-const int fallingAltitude = 30; // must drop this far to be considered falling (in meters)
+const int fallingAltitude = 60; // must drop this far to be considered falling (in meters)
 bool isFalling = false;
 
 uint32_t timer = millis();
@@ -362,7 +362,9 @@ void loop()
   // after at least read time amount has passed, print out current stats
   // and save to SD card
   // includes both GPS stats (date/time/location/etc) and temperature
-  if (millis() - timer > readTime && gps.available(gpsPort)) {
+  bool timeToWrite = (millis() - timer > readTime);
+  // if (timeToWrite && gps.available(gpsPort)) {
+  if (gps.available(gpsPort)) {
     fix = gps.read(); // NeoGPS
     if (fix.valid.altitude) {
       digitalWrite(LED_BUILTIN, LOW);
@@ -454,10 +456,10 @@ void loop()
       dataStr += "unable to retrieve data";
     }
 
-    // add test data to barometric pressure
+    // // add test data to barometric pressure
     // uint32_t testTimer = millis();
     // debugPrint("test looking for button");
-    // while (millis() - testTimer < 90000) {
+    // while (millis() - testTimer < 60000) {
     //   handleInputButtonPress();
     // }
     // debugPrint("done looking for button");
@@ -503,6 +505,76 @@ void loop()
       debugPrint("sd not available");
     }
     debugPrint(dataStr);
+    readOnce = true;
+  } else if (timeToWrite) {
+    digitalWrite(LED_BUILTIN, HIGH);
+    // Sends command to retrieve temperatures before querying
+    onewireTempSensors.requestTemperatures();
+
+    String powerSensorData;
+    if (powerSensorFound) {
+      // TODO: Unused, remove if not needed
+      float current = powerSensor.readCurrent();
+      float busVoltage = powerSensor.readBusVoltage();
+      float power = powerSensor.readPower();
+      powerSensorData = String(current, 4) + "," + String(busVoltage, 4) + 
+                        "," + String(power, 4) + ",";
+    } else {
+      powerSensorData = "NAN,NAN,NAN";
+    }
+
+    // Read barometric sensor data and store in string
+    String barSensorData = String(bme280.readPressure()) + "," +
+                           String(bme280.readTempC()) + "," + 
+                           String(bme280.readHumidity()) + ",";
+    float barAltitude = bme280.readAltitudeMeter();
+    
+    timer = millis(); // reset the timer
+
+    barSensorData += String(barAltitude) + ",";
+    if (bmeFound && readOnce) {
+      addAltitudeData(barAltitude, "barometric");
+    }
+
+    // Reset lastValidDateTime and only set if fix is valid
+    lastValidDateTime = "";
+    String dateStr;
+    String dataStr;
+    
+    dateStr += " , ,";
+    dataStr += dateStr;
+
+    dataStr += String(onewireTempSensors.getTempCByIndex(0)) + ",";
+
+    dataStr += barSensorData;
+    dataStr += powerSensorData;
+
+    dataStr += "unable to retrieve data";
+
+    // check to see if falling
+    // don't need to check if we are already falling
+    if (!isFalling) {
+      isFalling = checkAltitudeForFalling();
+    }
+    if (isFalling) {
+      handleFenceBreakOrFalling();
+    }
+
+    // if outside geofence, disconnect payload from balloon
+    // only use if useGeofence is set to true
+    if (useGeofence && outsideGeofence) {
+      handleFenceBreakOrFalling();
+    }
+
+    if (sd_init_successful) {
+      if (readOnce) {
+        writeToDataFile(dataStr);
+      }
+    } else {
+      debugPrint("sd not available");
+    }
+    debugPrint(dataStr);
+    readOnce = true;
   }
 }
 
@@ -622,11 +694,8 @@ bool checkAltitudeForFalling()
   float maxVal = gpsAltitudeReadings[0];
   float minVal = gpsAltitudeReadings[0];
   for (int i = 0; i < compareCount; i++) {
-    // int index = readCount-i-1;
     int index = i;
     float reading = gpsAltitudeReadings[index];
-    // debugPrint("gps index is: " + String(index));
-    // debugPrint("gps reading is " + String(reading));
     if (reading < 1.0) {
       gpsValid = false;
       break;
@@ -645,7 +714,6 @@ bool checkAltitudeForFalling()
     }
   }
   if (gpsValid && gpsIsFalling) {
-    // gpsIsFalling = true;
     writeToLogFile("GPS recorded falling at altitude " + 
                     String(gpsAltitudeReadings[0]) + 
                     " with highest recorded altitude being " + 
@@ -655,8 +723,6 @@ bool checkAltitudeForFalling()
   maxVal = barAltitudeReadings[0];
   minVal = barAltitudeReadings[0];
   for (int i = 0; i < compareCount; i++) {
-    // debugPrint("reading bar index " + String(readCount-i));
-    // int index = readCount-i-1;
     int index = i;
     float reading = barAltitudeReadings[index];
     if (reading < 1.0) {
@@ -665,7 +731,6 @@ bool checkAltitudeForFalling()
     }
     if ((barHighestAltitude - barAltitudeReadings[index]) 
           < fallingAltitude || index > barHighestAltitude) {
-          // < fallingAltitude) {
       // If any of the compared points aren't below the highest altitude,
       // don't mark as falling and break
       barIsFalling = false;
@@ -765,35 +830,14 @@ void adjustTime( NeoGPS::time_t & dt )
 
 } // adjustTime
 
-bool burnWireCycle()
+void burnWireCycle()
 {
-  // String message;
-  
-  if (millis() - burnTimer > burnTime &&
-      millis() - burnDelayTimer > burnDelayTime) {
-    if (burnCount >= burnCycles) {
-      burnCount = 4;
-      burnTimer = millis();
-      burnDelayTimer = millis();
-      return true;
-    }
-    // Start burn
-    writeToLogFile("Burn wire cycle " + String(++burnCount));
-    // message = "Burn wire cycle" + String(++burnCount);
+  for (int i = 0; i < burnCycles; i++) {
     digitalWrite(burnWirePin, HIGH);
-    burnTimer = millis();
-    burnDelayTimer = millis();
-  } else if (millis() - burnTimer < burnTime) {
-    // message = "Burn wire on for cycle: " + String(burnCount);
-    burnDelayTimer = millis();
-  } else if (millis() - burnTimer > burnTime &&
-             millis() - burnDelayTimer < burnDelayTime) {
-    // writeToLogFile("Burn wire delay for cycle " + String(burnCount));
-    // message = "Burn wire delay for cycle " + String(burnCount);
+    delay(burnTime);
     digitalWrite(burnWirePin, LOW);
+    delay(burnDelayTime);
   }
-  // writeToLogFile(message);
-  return false;
 }
 
 bool handleInputButtonPress()
@@ -801,53 +845,25 @@ bool handleInputButtonPress()
   // return bool to determine if we need to put rest
   // of functions on hold or not
   bool handlingButton = false;
-  if (releaseBurnInProgress) {
-    // ignore button press when already turning on burn cycle
-    return handlingButton;
-  }
   int buttonState = digitalRead(inputButtonPin);
   if (buttonState == HIGH) {
-    burnCount = 0;
     writeToLogFile("Button pressed. Initializing burn cycle");
     delay(4000);
     burnWireCycle();
     handlingButton = false;    
-  } else if (burnCount > 0) {
-    burnWireCycle();
-  } else if (burnCount >= burnCycles) {
-    burnCount = 0;
-    handlingButton = false;
   }
 
   return handlingButton;
 }
 
 void handleFenceBreakOrFalling() {
-  if (!burnReleaseComplete && !releaseBurnInProgress) {
-    debugPrint("setting burn count back to zero");
-    burnCount = 0;
-  }
   if (((bmeFound && barAltitudeReadings[0] > burnAltitudeLimit) ||
       (!bmeFound && gpsAltitudeReadings[0] > burnAltitudeLimit)) &&
       !burnReleaseComplete) {
     writeToLogFile("Burn cycle started automatically. Disconnecting from balloon");
-    releaseBurnInProgress = true;
-    burnReleaseComplete = burnWireCycle();
+    burnWireCycle();
+    burnReleaseComplete = true;
   } else {
-    writeToLogFile("turning wire off");
     digitalWrite(burnWirePin, LOW);
   }
-
-  // bool isAboveBar = (bmeFound && barAltitudeReadings[0] > burnAltitudeLimit);
-  // bool isAboveGps = (!bmeFound && gpsAltitudeReadings[0] > burnAltitudeLimit);
-  // bool isAboveAlt = isAboveBar || isAboveGps;
-  // if (!burnReleaseComplete) {
-  //   writeToLogFile("burn release is complete.");    
-  // }
-  // if (isAboveBar) {
-  //   writeToLogFile("Above altitude threshold according to bme");
-  // }
-  // if (isAboveGps) {
-  //   writeToLogFile("Above altitude threshold according to gps");
-  // }
 }
