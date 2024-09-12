@@ -11,8 +11,6 @@
 // Read temperature sensors
 #include <OneWire.h>
 #include <DallasTemperature.h>
-// servo library, controls connection between balloon and payload
-#include <Servo.h>
 // power sensor library
 #include <Adafruit_INA260.h>
 // barometric pressure sensor
@@ -29,22 +27,24 @@ gps_fix  fix; // This holds on to the latest values
 Adafruit_INA260 powerSensor = Adafruit_INA260();
 bool powerSensorFound = false;
 
-// servo related variables
-Servo balloonAttachServo;
-const int servoOpenPos = 115;
-const int servoHalfOpenPos = 100;
-const int servoClosePos = 70;
-int servoCurrentPos = 0;
-const int servoPin = 9;
-bool closedFromButton = true;
-const bool servoAttached = true;
-
 // set sample time in milliseconds
 const int readTime = 1000;
 
-// keeps track of how many times the chute deployer
-// has been powered on
-int deployerCount = 0;
+// keeps track of burn wire burn times
+int burnCount = 0;
+const int burnCycles = 3;
+const int burnTime = 4000;
+const int burnDelayTime = 2000;
+uint32_t burnTimer = millis();
+uint32_t burnDelayTimer = millis();
+const float burnAltitudeLimit = 600;
+// const float burnAltitudeLimit = 20;
+// keeps track of if we have used burn cycle
+// to release from the balloon or not
+// (does not include burn cycle because of button press)
+bool burnReleaseComplete = false;
+bool releaseBurnInProgress = false;
+bool readOnce = false;
 
 // geofence
 const bool useGeofence = true; // turn on if using geofence to drop payload
@@ -59,21 +59,23 @@ struct Geofence {
 };
 
 // Geofence geofenceLower = {43.0869, -83.29721, 43.08184, -83.30335};
-Geofence geofenceLower = {42.98269, -82.82611, 41.70606, -83.82611};
-Geofence geofenceUpper = {43.84309, -83.06529, 42.98269, -82.82611};
-Geofence geofenceOhio = {43.84309, -83.06529, 42.98269, -82.82611};
+Geofence geofenceLower = {43.011145, -82.781035, 41.728951, -83.876630};
+Geofence geofenceUpper = {43.854645, -82.983770, 43.011145, -82.781035};
 
 // Geofence geofences[] = {geofenceLower, geofenceUpper, geofenceOhio};
 
+// burn wire pin
+const int burnWirePin = 9;
+
 // input tactile button
-const int servoButtonPin = 10;
+const int inputButtonPin = 10;
 
 // Both temperature sensor chips are plugged into same pin
 #define TEMP_WIRE_BUS 8
 
 // Setup a oneWire instance to communicate with any OneWire devices  
 // (not just Maxim/Dallas temperature ICs) 
-OneWire oneWire(TEMP_WIRE_BUS); 
+OneWire oneWire(TEMP_WIRE_BUS);
 /********************************************************************/
 // Pass our oneWire reference to Dallas Temperature. 
 DallasTemperature onewireTempSensors(&oneWire);
@@ -109,11 +111,10 @@ float barHighestAltitude = 0.0;
 int gpsHighestAltitudeIndex = -1;
 int barHighestAltitudeIndex = -1;
 const int minAltitude = 750; // Must be at least this far before dropping (so that the parachute is deployed)
-const int fallingAltitude = 100; // must drop this far to be considered falling
+const int fallingAltitude = 60; // must drop this far to be considered falling (in meters)
 bool isFalling = false;
 
 uint32_t timer = millis();
-uint32_t timerDebug = millis();
 bool sd_init_successful = false;
 
 void setup() {
@@ -127,8 +128,8 @@ void setup() {
   // initialize digital pin LED_BUILTIN as an output.
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
-  // initialize D12 as chute deployer output
-  pinMode(12, OUTPUT);
+  // initialize burn wire as off
+  digitalWrite(burnWirePin, LOW);
 
   // see if the card is present and can be initialized
   // keep running either way, because data is being recorded
@@ -144,6 +145,10 @@ void setup() {
     initDataFile();
     initLogFile();
   }
+  // initialize burn wire as output
+  pinMode(burnWirePin, OUTPUT);
+  // initialize pushbutton pin as input
+  pinMode(inputButtonPin, INPUT);
   setupSensors();
 }
 
@@ -227,11 +232,6 @@ void setupSensors()
     writeToLogFile("Unable to find INA260 power sensor chip");
   } else {
     powerSensorFound = true;
-  }
-  if (servoAttached) {
-    // setup servo that connects balloon to payload
-    // as well as tactile button that controls servo
-    setupBalloonAttachServo();
   }
 }
 
@@ -354,26 +354,17 @@ void setupBarometricSensor()
   }
 }
 
-void setupBalloonAttachServo()
-{
-  balloonAttachServo.attach(servoPin);
-  // start by closing the servo
-  // we do this so that we know the starting location
-  // of the servo, since it cannot tell us
-  servoCurrentPos = servoClosePos;
-  balloonAttachServo.write(servoCurrentPos);
-  // initialize pushbutton pin as input
-  pinMode(servoButtonPin, INPUT);
-}
-
 void loop()
 {
-  bool buttonPressActions = handleServoButtonPress();
-  if (buttonPressActions)
-    debugPrint("button is being pressed");
-  // approximately every 10 seconds or so, print out the current stats
+  bool buttonPressActions = handleInputButtonPress();
+  // if (buttonPressActions)
+  //   debugPrint("button is being pressed");
+  // after at least read time amount has passed, print out current stats
+  // and save to SD card
   // includes both GPS stats (date/time/location/etc) and temperature
-  if (millis() - timer > readTime && gps.available(gpsPort)) {
+  bool timeToWrite = (millis() - timer > readTime);
+  // if (timeToWrite && gps.available(gpsPort)) {
+  if (gps.available(gpsPort)) {
     fix = gps.read(); // NeoGPS
     if (fix.valid.altitude) {
       digitalWrite(LED_BUILTIN, LOW);
@@ -465,6 +456,34 @@ void loop()
       dataStr += "unable to retrieve data";
     }
 
+    // // add test data to barometric pressure
+    // uint32_t testTimer = millis();
+    // debugPrint("test looking for button");
+    // while (millis() - testTimer < 60000) {
+    //   handleInputButtonPress();
+    // }
+    // debugPrint("done looking for button");
+    // int pointSize = 45;
+    // float points[] = {204.43, 204.6, 204.52, 204.18, 204.6,
+    //                   204.35, 204.52, 204.6, 204.18, 204.43,
+    //                   204.35, 204.43, 205.79, 240.33, 310.96,
+    //                   386.23, 460.4, 540.71, 616.18, 684.9,
+    //                   755.61, 828.08, 897.07, 968.08, 1038.76,
+    //                   1124.88, 1202.56, 23001.38, 23037.09, 23059.78,
+    //                   22855.55, 22654.02, 22368.4, 22088.34, 21797.27,
+    //                   21522.79, 21216.25, 20939.99, 20652.88, 20363.88,
+    //                   20087.91, 19807.08, 19534.37, 19257.83, 18974.81};
+    // for (int i = 0; i < pointSize; i++) {
+    //   debugPrint("adding point " + String(points[i]));
+    //   addAltitudeData(points[i], "barometric");
+    //   if (checkAltitudeForFalling()) {
+    //     handleFenceBreakOrFalling();
+    //   }
+    //   delay(1000);
+    // }
+    // debugPrint("done with testing");
+    // delay(10000);
+
     // check to see if falling
     // don't need to check if we are already falling
     if (!isFalling) {
@@ -486,13 +505,83 @@ void loop()
       debugPrint("sd not available");
     }
     debugPrint(dataStr);
+    readOnce = true;
+  } else if (timeToWrite) {
+    digitalWrite(LED_BUILTIN, HIGH);
+    // Sends command to retrieve temperatures before querying
+    onewireTempSensors.requestTemperatures();
+
+    String powerSensorData;
+    if (powerSensorFound) {
+      // TODO: Unused, remove if not needed
+      float current = powerSensor.readCurrent();
+      float busVoltage = powerSensor.readBusVoltage();
+      float power = powerSensor.readPower();
+      powerSensorData = String(current, 4) + "," + String(busVoltage, 4) + 
+                        "," + String(power, 4) + ",";
+    } else {
+      powerSensorData = "NAN,NAN,NAN";
+    }
+
+    // Read barometric sensor data and store in string
+    String barSensorData = String(bme280.readPressure()) + "," +
+                           String(bme280.readTempC()) + "," + 
+                           String(bme280.readHumidity()) + ",";
+    float barAltitude = bme280.readAltitudeMeter();
+    
+    timer = millis(); // reset the timer
+
+    barSensorData += String(barAltitude) + ",";
+    if (bmeFound && readOnce) {
+      addAltitudeData(barAltitude, "barometric");
+    }
+
+    // Reset lastValidDateTime and only set if fix is valid
+    lastValidDateTime = "";
+    String dateStr;
+    String dataStr;
+    
+    dateStr += " , ,";
+    dataStr += dateStr;
+
+    dataStr += String(onewireTempSensors.getTempCByIndex(0)) + ",";
+
+    dataStr += barSensorData;
+    dataStr += powerSensorData;
+
+    dataStr += "unable to retrieve data";
+
+    // check to see if falling
+    // don't need to check if we are already falling
+    if (!isFalling) {
+      isFalling = checkAltitudeForFalling();
+    }
+    if (isFalling) {
+      handleFenceBreakOrFalling();
+    }
+
+    // if outside geofence, disconnect payload from balloon
+    // only use if useGeofence is set to true
+    if (useGeofence && outsideGeofence) {
+      handleFenceBreakOrFalling();
+    }
+
+    if (sd_init_successful) {
+      if (readOnce) {
+        writeToDataFile(dataStr);
+      }
+    } else {
+      debugPrint("sd not available");
+    }
+    debugPrint(dataStr);
+    readOnce = true;
   }
 }
 
 bool isInsideGeofence(float lat, float lon) {
   // Compares to geofence locations to see if in or out
-  // if out, will trigger the servo opening and disconnecting
-  // from balloon
+  // if out, will trigger balloon disconnect sequence
+  // (currently is burn wire)
   bool inside = true;
 
   // Don't compare if under lower latitude. Outside of danger
@@ -543,8 +632,8 @@ void writeToLogFile(String writeData)
   debugPrint(writeData);
   File logFile = SD.open(logFileName, FILE_WRITE);
   if (logFile) {
-    // Write date/time if not invalid. If the last reading was
-    // not valid, it will write an empty line instead
+    // Write date/time if not invalid. If invalid, 
+    // empty string is written
     logFile.println(lastValidDateTime + " ");    
     logFile.println(writeData);
     logFile.close();
@@ -605,11 +694,8 @@ bool checkAltitudeForFalling()
   float maxVal = gpsAltitudeReadings[0];
   float minVal = gpsAltitudeReadings[0];
   for (int i = 0; i < compareCount; i++) {
-    // int index = readCount-i-1;
     int index = i;
     float reading = gpsAltitudeReadings[index];
-    // debugPrint("gps index is: " + String(index));
-    // debugPrint("gps reading is " + String(reading));
     if (reading < 1.0) {
       gpsValid = false;
       break;
@@ -628,7 +714,6 @@ bool checkAltitudeForFalling()
     }
   }
   if (gpsValid && gpsIsFalling) {
-    // gpsIsFalling = true;
     writeToLogFile("GPS recorded falling at altitude " + 
                     String(gpsAltitudeReadings[0]) + 
                     " with highest recorded altitude being " + 
@@ -638,8 +723,6 @@ bool checkAltitudeForFalling()
   maxVal = barAltitudeReadings[0];
   minVal = barAltitudeReadings[0];
   for (int i = 0; i < compareCount; i++) {
-    // debugPrint("reading bar index " + String(readCount-i));
-    // int index = readCount-i-1;
     int index = i;
     float reading = barAltitudeReadings[index];
     if (reading < 1.0) {
@@ -648,7 +731,6 @@ bool checkAltitudeForFalling()
     }
     if ((barHighestAltitude - barAltitudeReadings[index]) 
           < fallingAltitude || index > barHighestAltitude) {
-          // < fallingAltitude) {
       // If any of the compared points aren't below the highest altitude,
       // don't mark as falling and break
       barIsFalling = false;
@@ -748,56 +830,40 @@ void adjustTime( NeoGPS::time_t & dt )
 
 } // adjustTime
 
-bool handleServoButtonPress()
+void burnWireCycle()
 {
-  if (!servoAttached) {
-    return false;
+  for (int i = 0; i < burnCycles; i++) {
+    digitalWrite(burnWirePin, HIGH);
+    delay(burnTime);
+    digitalWrite(burnWirePin, LOW);
+    delay(burnDelayTime);
   }
-  // if the servo is open, or we are currently closing the servo,
-  // we pass true so that the gps read knows to pause
-  // might not be needed, will test
-  bool handlingServo = false;
-  // Looks at button state. Opens quickly when pressed, and closes
-  // slowly when release. Close is slow so to not cause pinching
-  int buttonState = digitalRead(servoButtonPin);
-  if (buttonState == HIGH && servoCurrentPos < servoHalfOpenPos) {
-    handlingServo = true;
-    servoCurrentPos = servoHalfOpenPos;
-    writeToLogFile("Button pressed. Opening servo to half-open position.");
-    balloonAttachServo.write(servoCurrentPos);
-    delay(50);
-    // toggle here to ensure that we don't close the servo if it
-    // is opened from the geofence, only from button
-    closedFromButton = false;
-  } else if (buttonState == HIGH) {
-    handlingServo = true;
-  } else if (buttonState == LOW && servoCurrentPos > servoClosePos &&
-             !closedFromButton) {
-    handlingServo = true;
-    servoCurrentPos--;
-    // writeToLogFile("Button released. Servo being closed");
-    balloonAttachServo.write(servoCurrentPos);
-    delay(50);
-    if (servoCurrentPos == servoClosePos) {
-      writeToLogFile("Servo closed after button release");
-      closedFromButton = true;
-      handlingServo = false;
-    }
+}
+
+bool handleInputButtonPress()
+{
+  // return bool to determine if we need to put rest
+  // of functions on hold or not
+  bool handlingButton = false;
+  int buttonState = digitalRead(inputButtonPin);
+  if (buttonState == HIGH) {
+    writeToLogFile("Button pressed. Initializing burn cycle");
+    delay(4000);
+    burnWireCycle();
+    handlingButton = false;    
   }
 
-  return handlingServo;
+  return handlingButton;
 }
 
 void handleFenceBreakOrFalling() {
-  if (deployerCount < 20) {
-    digitalWrite(12, HIGH);
-    delay(100);
-    digitalWrite(12, LOW);
-    deployerCount++;
-  }
-  if (servoCurrentPos < servoOpenPos && servoAttached) {
-    writeToLogFile("Servo opening automatically. Disconnecting from balloon");
-    servoCurrentPos = servoOpenPos;
-    balloonAttachServo.write(servoCurrentPos);
+  if (((bmeFound && barAltitudeReadings[0] > burnAltitudeLimit) ||
+      (!bmeFound && gpsAltitudeReadings[0] > burnAltitudeLimit)) &&
+      !burnReleaseComplete) {
+    writeToLogFile("Burn cycle started automatically. Disconnecting from balloon");
+    burnWireCycle();
+    burnReleaseComplete = true;
+  } else {
+    digitalWrite(burnWirePin, LOW);
   }
 }
