@@ -90,7 +90,7 @@ int analogTempInput = 0;
 #define WRITE_PIN 53
 
 // set to true if you want output to Serial monitor
-#define DEBUG true
+#define DEBUG false
 
 // don't include file type for now, that is
 // determined at initialization, as well as
